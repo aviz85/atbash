@@ -40,7 +40,6 @@ if not TOKEN:
 
 # Initialize application properly
 application = Application.builder().token(TOKEN).build()
-application.initialize()
 
 # Add secret token as constant
 WEBHOOK_SECRET_TOKEN = "your_secret_token"  # Should match the one in set_webhook.py
