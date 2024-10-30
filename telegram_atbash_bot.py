@@ -5,6 +5,7 @@ import datetime
 import re
 import os
 from dotenv import load_dotenv
+from flask import Flask, request
 
 # Load environment variables
 load_dotenv()
@@ -26,6 +27,9 @@ FUN_FACTS = [
     "צופן אתבש הוא דוגמה לצופן החלפה חד-אלפביתי",
     "בימי בית המקדש השתמשו בצפנים שונים להעברת מסרים"
 ]
+
+# Initialize Flask app
+app = Flask(__name__)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a welcome message with main menu when the command /start is issued."""
@@ -135,14 +139,32 @@ async def handle_game_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("❌ לא נכון, נסה שוב!")
 
+@app.route('/', methods=['GET'])
+def index():
+    return "Bot is running"
+
+@app.route('/webhook', methods=['POST'])
+async def webhook():
+    """Handle incoming webhook updates"""
+    if request.method == "POST":
+        update = Update.de_json(request.get_json(), application.bot)
+        await application.process_update(update)
+    return "OK"
+
 def main():
     """Start the bot."""
-    # Get token from environment variable
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Example: https://your-domain.com/webhook
+    PORT = int(os.getenv("PORT", 8443))
     
     if not TOKEN:
         raise ValueError("No token found! Make sure to set TELEGRAM_BOT_TOKEN in .env file")
     
+    if not WEBHOOK_URL:
+        raise ValueError("No webhook URL found! Make sure to set WEBHOOK_URL in .env file")
+    
+    # Create application
+    global application
     application = Application.builder().token(TOKEN).build()
 
     # Add handlers
@@ -150,8 +172,11 @@ def main():
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    print("Bot is running...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Set webhook
+    application.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
+    
+    # Start Flask server
+    app.run(host='0.0.0.0', port=PORT)
 
 if __name__ == '__main__':
     main() 
