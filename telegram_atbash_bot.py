@@ -1,19 +1,14 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from flask import Flask, request
-from quart import Quart, request, Response
+from contextlib import asynccontextmanager
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, Updater
+from fastapi import FastAPI, Request, Response
 import random
 import datetime
 import os
 from dotenv import load_dotenv
-import hmac
-import hashlib
 
 # Load environment variables
 load_dotenv()
-
-# Initialize Quart app (async Flask)
-app = Quart(__name__)
 
 # Atbash conversion dictionary for Hebrew letters
 ATBASH_DICT = {
@@ -35,49 +30,39 @@ FUN_FACTS = [
 
 # Create bot application at module level
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
 if not TOKEN:
     raise ValueError("No token found! Make sure to set TELEGRAM_BOT_TOKEN in .env file")
 
-# Initialize application properly
-application = Application.builder().token(TOKEN).build()
+# Initialize application
+ptb = Application.builder().token(TOKEN).updater(None).build()
 
-# Add secret token as constant
-WEBHOOK_SECRET_TOKEN = "your_secret_token"  # Should match the one in set_webhook.py
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan manager for the FastAPI application"""
+    if not WEBHOOK_URL:
+        # Use polling if no webhook URL is provided
+        updater = Updater(ptb.bot, update_queue=ptb.update_queue)
+        await updater.initialize()
+        await updater.start_polling(poll_interval=1)
+    else:
+        # Set webhook
+        await ptb.bot.set_webhook(
+            url=f'{WEBHOOK_URL}/telegram',
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,
+        )
 
-@app.route('/health')
-async def health_check():
-    """Health check endpoint"""
-    return "Bot is running"
+    async with ptb:
+        await ptb.start()
+        yield
+        await ptb.stop()
 
-@app.route('/webhook', methods=['POST'])
-async def webhook():
-    """Handle incoming webhook updates with proper security and error handling"""
-    try:
-        # Verify the request is from Telegram
-        secret_header = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
-        if WEBHOOK_SECRET_TOKEN and secret_header != WEBHOOK_SECRET_TOKEN:
-            return Response('Unauthorized', status=403)
+# Initialize FastAPI app with lifespan manager
+app = FastAPI(lifespan=lifespan)
 
-        # Get and validate the update data
-        update_data = await request.get_json()
-        if not update_data:
-            return Response('Invalid update data', status=400)
-
-        # Create Update object and process it
-        try:
-            update = Update.de_json(update_data, application.bot)
-            await application.process_update(update)
-        except Exception as e:
-            print(f"Error processing update: {e}")
-            # Don't return error to Telegram - they might retry bad updates
-            return Response('OK', status=200)
-
-        return Response('OK', status=200)
-
-    except Exception as e:
-        print(f"Webhook error: {e}")
-        return Response('Internal server error', status=500)
-
+# Your existing bot handlers remain the same...
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send a welcome message with main menu when the command /start is issued."""
     keyboard = [
@@ -186,56 +171,21 @@ async def handle_game_guess(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("❌ לא נכון, נסה שוב!")
 
-async def init_webhook():
-    """Initialize webhook settings with proper error handling"""
-    try:
-        WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-        if not WEBHOOK_URL:
-            raise ValueError("No webhook URL found! Make sure to set WEBHOOK_URL in .env file")
-        
-        # Delete existing webhook first
-        await application.bot.delete_webhook()
-        
-        # Set new webhook with all security options
-        await application.bot.set_webhook(
-            url=f"{WEBHOOK_URL}/webhook",
-            allowed_updates=["message", "callback_query"],
-            secret_token=WEBHOOK_SECRET_TOKEN,
-            drop_pending_updates=True
-        )
-        
-        # Verify webhook was set correctly
-        webhook_info = await application.bot.get_webhook_info()
-        print(f"Webhook set to {webhook_info.url}")
-        if webhook_info.last_error_date:
-            print(f"Warning: Last webhook error: {webhook_info.last_error_message}")
+# Add handlers to application
+ptb.add_handler(CommandHandler("start", start))
+ptb.add_handler(CallbackQueryHandler(button_callback))
+ptb.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    except Exception as e:
-        print(f"Failed to initialize webhook: {e}")
-        raise
+@app.post('/telegram')
+async def process_update(request: Request):
+    """Process incoming telegram updates"""
+    req = await request.json()
+    await ptb.update_queue.put(Update.de_json(data=req, bot=ptb.bot))
+    return Response(status_code=200)
 
-def main():
-    """Start the bot with proper configuration."""
-    PORT = int(os.getenv("PORT", 8443))
-    
-    # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_game_guess))
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy"}
 
-    # Initialize webhook before starting
-    app.before_serving(init_webhook)
-    
-    # Configure Quart for production
-    app.config['MAX_CONTENT_LENGTH'] = 1024 * 1024  # 1MB max-limit
-    
-    # Start Quart server with proper host binding
-    app.run(
-        host='0.0.0.0',
-        port=PORT,
-        debug=False  # Important: set to False in production
-    )
-
-if __name__ == '__main__':
-    main() 
+# No need for main() function anymore as FastAPI handles the server 

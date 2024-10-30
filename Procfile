@@ -1,1 +1,1 @@
-web: hypercorn telegram_atbash_bot:app 
+web: uvicorn telegram_atbash_bot:app --host=0.0.0.0 --port=$PORT 
