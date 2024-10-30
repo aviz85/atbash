@@ -1,1 +1,1 @@
-web: gunicorn telegram_atbash_bot:app 
+web: hypercorn telegram_atbash_bot:app 
